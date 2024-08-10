@@ -7,3 +7,4 @@ grab_data
 exp/summaries
 *.pt
 *.log
+*.obj
