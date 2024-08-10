@@ -46,6 +46,7 @@ This repository contains the pytorch implementation for the paper [ContactGen: G
     conda create -n contactgen python=3.9
     conda activate contactgen
     pip3 install torch # install compatible version
+    conda install cuda
     pip install "git+https://github.com/facebookresearch/pytorch3d.git"
     pip install -r requirements.txt
     cd pointnet_lib && python setup.py install
