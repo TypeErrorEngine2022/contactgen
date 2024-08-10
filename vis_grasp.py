@@ -25,10 +25,11 @@ def ho_plot(hand_mesh, obj_mesh, save_path, viewpoint_path="assets/viewpoint.jso
     vis.add_geometry(vis_obj)
     ctr = vis.get_view_control()
     param = open3d.io.read_pinhole_camera_parameters(viewpoint_path)
-    ctr.convert_from_pinhole_camera_parameters(param)
+    ctr.convert_from_pinhole_camera_parameters(param, True)
     vis.poll_events()
     vis.update_renderer()
     vis.capture_screen_image(save_path)
+    vis.run()
     vis.destroy_window()
         
 
