@@ -8,7 +8,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ContactGen Training')
 
     parser.add_argument('--work-dir', default='./exp', type=str, help='exp dir')
-    parser.add_argument('--batch-size', default=128, type=int,
+    parser.add_argument('--batch-size', default=64, type=int,
                         help='Training batch size')
     parser.add_argument('--lr', default=8e-4, type=float,
                         help='Training learning rate')
@@ -29,6 +29,9 @@ if __name__ == '__main__':
         'checkpoint': None, 
     }
 
+    # cfg will override the default config
+    # for example, if batch_size is not specified in command line
+    # it will use the default value set in parser.add_argument('--batch-size' ...
     cfg = Config(default_cfg_path=cfg_path, **cfg)
     cf_trainer = Trainer(cfg=cfg)
     cf_trainer.fit()
