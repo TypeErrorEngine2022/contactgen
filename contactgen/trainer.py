@@ -180,42 +180,30 @@ class Trainer:
     
     def train_ddpm(self):
         n_epochs = self.cfg.n_epochs
+        z_contact = torch.distributions.normal.Normal(self.latentSpace['mean_contact'], torch.exp(self.latentSpace['std_contact']))
+        z_part = torch.distributions.normal.Normal(self.latentSpace['mean_part'], torch.exp(self.latentSpace['std_part']))
+        z_uv = torch.distributions.normal.Normal(self.latentSpace['mean_uv'], torch.exp(self.latentSpace['std_uv']))
 
-        for i in range(n_epochs):
-            for ddpm in [self.contact_ddpm, self.part_ddpm, self.uv_ddpm]:
+        ddpmNames = ['contact', 'part', 'uv']
+        ddpmList = torch.nn.ModuleList([self.contact_ddpm, self.part_ddpm, self.uv_ddpm])
+        optimizers = [self.contact_ddpm_optimizer, self.part_ddpm_optimizer, self.uv_ddpm_optimizer]
+
+        for _ in range(n_epochs):
+            ema_vals = [None, None, None]
+            latentSamples = [z_contact.rsample().detach(), z_part.rsample().detach(), z_uv.rsample().detach()] # each one has shape [cfg.bacth_size, cfg.latentD]
+
+            for index, (key, ddpm, optimizer, ema_val, latentSample) in enumerate(zip(ddpmNames, ddpmList, optimizers, ema_vals, latentSamples)):
                 ddpm.train()
-
-            contact_ddpm_loss_ema = None
-            part_ddpm_loss_ema = None
-            uv_ddpm_loss_ema = None
-
-            for optimizer in [self.optimizer_net, self.contact_ddpm_optimizer, self.part_ddpm_optimizer, self.uv_ddpm_optimizer]:
                 optimizer.zero_grad()
 
-            z_contact = torch.distributions.normal.Normal(self.latentSpace['mean_contact'], torch.exp(self.latentSpace['std_contact']))
-            z_part = torch.distributions.normal.Normal(self.latentSpace['mean_part'], torch.exp(self.latentSpace['std_part']))
-            z_uv = torch.distributions.normal.Normal(self.latentSpace['mean_uv'], torch.exp(self.latentSpace['std_uv']))
-
-            latent_samples = {
-                'z_s_contact': z_contact.rsample(), # shape [batch_size, cfg.latentD]
-                'z_s_part': z_part.rsample(), # shape [batch_size, cfg.latentD]
-                'z_s_uv': z_uv.rsample(), # shape [batch_size, cfg.latentD]
-            }
-
-            ddpm_loss_dict = {}
-            ddpm_loss_dict['contact_ddpm'] = (self.contact_ddpm(latent_samples['z_s_contact']), contact_ddpm_loss_ema)
-            ddpm_loss_dict['part_ddpm'] = (self.part_ddpm(latent_samples['z_s_part']), part_ddpm_loss_ema)
-            ddpm_loss_dict['uv_ddpm'] = (self.uv_ddpm(latent_samples['z_s_uv']), uv_ddpm_loss_ema)
-
-            for key, (loss, loss_ema) in ddpm_loss_dict.items():
+                loss = ddpm(latentSample)
                 loss.backward()
-                if loss_ema is None:
-                    loss_ema = loss.item()
+
+                if ema_val is None:
+                    ema_vals[index] = loss.item()
                 else:
-                    loss_ema = 0.9 * loss_ema + 0.1 * loss.item()
-                print(f"{key}: {loss_ema:.4f}")
+                    ema_vals[index] = 0.9 * ema_val + 0.1 * loss.item()
             
-            for optimizer in [self.contact_ddpm_optimizer, self.part_ddpm_optimizer, self.uv_ddpm_optimizer]:
                 optimizer.step()
 
     def loss_net(self, dorig, drec):

@@ -114,11 +114,11 @@ class ContactGenModel(nn.Module):
                    'mean_part': z_part.mean, 'std_part': z_part.scale,
                    'mean_uv': z_uv.mean, 'std_uv': z_uv.scale}
         if self.contact_ddpm:
-            z_s_contact = self.contact_ddpm.sample(1, z_s_contact.shape, self.device)
+            z_s_contact = self.contact_ddpm.sample(obj_cond.shape[0], z_s_contact.shape, self.device)
         if self.part_ddpm:
-            z_s_part = self.part_ddpm.sample(1, z_s_part.shape, self.device)
+            z_s_part = self.part_ddpm.sample(obj_cond.shape[0], z_s_part.shape, self.device)
         if self.uv_ddpm:
-            z_s_uv = self.uv_ddpm.sample(1, z_s_uv.shape, self.device)    
+            z_s_uv = self.uv_ddpm.sample(obj_cond.shape[0], z_s_uv.shape, self.device)    
         contacts_pred, partition_pred, uv_pred = self.decode(z_s_contact, z_s_part, z_s_uv, obj_cond, partition_object)
 
         results.update({'contacts_object': contacts_pred,
