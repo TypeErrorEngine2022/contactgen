@@ -14,6 +14,8 @@ from .model import ContactGenModel
 from .hand_object import HandObject
 from .datasets.grab_dataset import Grab
 
+from ddpm.simple_ddpm import DDPM, DummyEpsModel
+
 
 class Trainer:
 
@@ -49,6 +51,9 @@ class Trainer:
         self.load_data(cfg)
 
         self.model = ContactGenModel(cfg).to(self.device)
+        self.contact_ddpm = DDPM(eps_model=DummyEpsModel(self.cfg.latentD), betas=(1e-4, 0.02), n_T=1000).to(self.device)
+        self.part_ddpm = DDPM(eps_model=DummyEpsModel(self.cfg.latentD), betas=(1e-4, 0.02), n_T=1000).to(self.device)
+        self.uv_ddpm = DDPM(eps_model=DummyEpsModel(self.cfg.latentD), betas=(1e-4, 0.02), n_T=1000).to(self.device)
         self.hand_object = HandObject(self.device)
         self.model.cfg = cfg
 
@@ -66,12 +71,17 @@ class Trainer:
                                                                            eta_min=1e-4)
         self.start_epoch = 0
 
+        self.contact_ddpm_optimizer = torch.optim.Adam(self.contact_ddpm.parameters(), lr=2e-4)
+        self.part_ddpm_optimizer = torch.optim.Adam(self.part_ddpm.parameters(), lr=2e-4)
+        self.uv_ddpm_optimizer = torch.optim.Adam(self.uv_ddpm.parameters(), lr=2e-4)
+
         if cfg.checkpoint is not None:
             checkpoint = torch.load(cfg.checkpoint, map_location=self.device)
             weight = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
             self._get_net_model().load_state_dict(weight, strict=True)
             self.logger('Load model from %s' % cfg.checkpoint)
         self.epoch_completed = self.start_epoch
+        self.latentSpace = {}
 
     def load_data(self, cfg):
         kwargs = {'num_workers': cfg.n_workers,
@@ -101,12 +111,14 @@ class Trainer:
         return model
 
     def train(self, epoch_num):
+        # set train mode
         self.model.train()
         save_every_it = len(self.ds_train) // self.cfg.log_every_epoch
 
         train_loss_dict_net = {}
         torch.autograd.set_detect_anomaly(True)
         n_iters = len(self.ds_train)
+        drec_net = {}
         for it, input in enumerate(self.ds_train):
         
             input = {k: input[k].to(self.device) for k in input.keys()}
@@ -115,7 +127,7 @@ class Trainer:
             self.optimizer_net.zero_grad()
 
             if self.fit_net:
-                drec_net = self.model(**dorig)
+                drec_net = self.model(**dorig) # called the model with input, forward is called
                 
                 global_step = epoch_num * n_iters + it
                 num_total_iter = self.cfg.n_epochs * n_iters
@@ -143,6 +155,7 @@ class Trainer:
                 self.lr_scheduler.step(epoch_num + it / n_iters)
 
         train_loss_dict_net = {k: v / len(self.ds_train) for k, v in train_loss_dict_net.items()}
+        self.latentSpace = drec_net # record the trained latent space
 
         return train_loss_dict_net
 
@@ -155,7 +168,6 @@ class Trainer:
                 input = {k: input[k].to(self.device) for k in input.keys()}
                 dorig = self.hand_object.forward(input['hand_verts'], input['hand_frames'],
                                                  input['obj_verts'], input['obj_vn'])
-                
                 drec_net = self.model(**dorig)
                 _, cur_loss_dict_net = self.loss_net(dorig, drec_net)
 
@@ -165,6 +177,46 @@ class Trainer:
             eval_loss_dict_net = {k: v / len(self.ds_val) for k, v in eval_loss_dict_net.items()}
           
         return eval_loss_dict_net
+    
+    def train_ddpm(self):
+        n_epochs = self.cfg.n_epochs
+
+        for i in range(n_epochs):
+            for ddpm in [self.contact_ddpm, self.part_ddpm, self.uv_ddpm]:
+                ddpm.train()
+
+            contact_ddpm_loss_ema = None
+            part_ddpm_loss_ema = None
+            uv_ddpm_loss_ema = None
+
+            for optimizer in [self.optimizer_net, self.contact_ddpm_optimizer, self.part_ddpm_optimizer, self.uv_ddpm_optimizer]:
+                optimizer.zero_grad()
+
+            z_contact = torch.distributions.normal.Normal(self.latentSpace['mean_contact'], torch.exp(self.latentSpace['std_contact']))
+            z_part = torch.distributions.normal.Normal(self.latentSpace['mean_part'], torch.exp(self.latentSpace['std_part']))
+            z_uv = torch.distributions.normal.Normal(self.latentSpace['mean_uv'], torch.exp(self.latentSpace['std_uv']))
+
+            latent_samples = {
+                'z_s_contact': z_contact.rsample(), # shape [batch_size, cfg.latentD]
+                'z_s_part': z_part.rsample(), # shape [batch_size, cfg.latentD]
+                'z_s_uv': z_uv.rsample(), # shape [batch_size, cfg.latentD]
+            }
+
+            ddpm_loss_dict = {}
+            ddpm_loss_dict['contact_ddpm'] = (self.contact_ddpm(latent_samples['z_s_contact']), contact_ddpm_loss_ema)
+            ddpm_loss_dict['part_ddpm'] = (self.part_ddpm(latent_samples['z_s_part']), part_ddpm_loss_ema)
+            ddpm_loss_dict['uv_ddpm'] = (self.uv_ddpm(latent_samples['z_s_uv']), uv_ddpm_loss_ema)
+
+            for key, (loss, loss_ema) in ddpm_loss_dict.items():
+                loss.backward()
+                if loss_ema is None:
+                    loss_ema = loss.item()
+                else:
+                    loss_ema = 0.9 * loss_ema + 0.1 * loss.item()
+                print(f"{key}: {loss_ema:.4f}")
+            
+            for optimizer in [self.contact_ddpm_optimizer, self.part_ddpm_optimizer, self.uv_ddpm_optimizer]:
+                optimizer.step()
 
     def loss_net(self, dorig, drec):
         device = dorig['verts_object'].device
@@ -231,7 +283,7 @@ class Trainer:
         if n_epochs is None:
             n_epochs = self.cfg.n_epochs
 
-        self.logger('Started Training at %s for %d epochs' % (datetime.strftime(starttime, '%Y-%m-%d_%H:%M:%S'), n_epochs))
+        self.logger('Started Training AutoEncoder at %s for %d epochs' % (datetime.strftime(starttime, '%Y-%m-%d_%H:%M:%S'), n_epochs))
         if message is not None:
             self.logger(message)
 
@@ -309,7 +361,69 @@ class Trainer:
 
         endtime = datetime.now().replace(microsecond=0)
 
-        self.logger('Finished Training at %s\n' % (datetime.strftime(endtime, '%Y-%m-%d_%H:%M:%S')))
+        self.logger('Finished Training AutoEncoder at %s\n' % (datetime.strftime(endtime, '%Y-%m-%d_%H:%M:%S')))
+        self.logger('Training done in %s!\n' % (endtime - starttime))
+        
+        self.logger('Start Trainig DDPM at %s\n' % (datetime.strftime(endtime, '%Y-%m-%d_%H:%M:%S')))
+        
+        self.model.insert_ddpms(self.contact_ddpm, self.part_ddpm, self.uv_ddpm)
+        for epoch_num in range(self.start_epoch, n_epochs):
+            self.logger('--- starting Epoch # %03d' % epoch_num)
+        
+            # TODO: record loss in training ddpm
+            self.train_ddpm()
+            eval_loss_dict_net = self.evaluate()
+
+            if self.fit_net:
+                with torch.no_grad():
+                    eval_msg = Trainer.create_loss_message(eval_loss_dict_net, epoch_num=self.epoch_completed, it=len(self.ds_val))
+
+                    self.cfg.checkpoint = makepath(os.path.join(self.cfg.work_dir, 'checkpoints', 'E%03d_net.pt' % (self.epoch_completed)), isfile=True)
+                    if not epoch_num % self.cfg.snapshot_every_epoch:
+                        self.save_net()
+                    self.logger(eval_msg + ' ** ')
+
+                    self.swriter.add_scalars('loss_net/kl_loss',
+                                             {
+                                                 'evald_loss_kl_contact': eval_loss_dict_net['loss_kl_contact'],
+                                                 'evald_loss_kl_part': eval_loss_dict_net['loss_kl_part'],
+                                                 'evald_loss_kl_uv': eval_loss_dict_net['loss_kl_uv'],
+                                             },
+                                             self.epoch_completed)
+
+                    self.swriter.add_scalars('loss_net/total_rec_loss',
+                                             {
+                                                 'evald_loss_total': eval_loss_dict_net['loss_total'],
+                                             },
+                                             self.epoch_completed)
+
+                    self.swriter.add_scalars('loss_net/contact_rec_loss',
+                                             {
+                                                 'evald_loss_contact_rec': eval_loss_dict_net[
+                                                     'loss_contact_rec'],
+                                             },
+                                             self.epoch_completed)
+
+                    self.swriter.add_scalars('loss_net/part_rec_loss',
+                                             {
+                                                 'evald_loss_part_rec': eval_loss_dict_net[
+                                                     'loss_part_rec'],
+                                             },
+                                             self.epoch_completed)
+
+                    self.swriter.add_scalars('loss_net/uv_rec_loss',
+                                             {
+                                                 'evald_loss_uv_rec': eval_loss_dict_net[
+                                                     'loss_uv_rec'],
+                                             },
+                                             self.epoch_completed)
+            self.epoch_completed += 1
+
+            if not self.fit_net:
+                self.logger('Stopping the training!')
+                break
+
+        self.logger('Finished Training DDPM at %s\n' % (datetime.strftime(endtime, '%Y-%m-%d_%H:%M:%S')))
         self.logger('Training done in %s!\n' % (endtime - starttime))
 
     @staticmethod

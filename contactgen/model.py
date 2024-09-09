@@ -41,6 +41,7 @@ class ContactGenModel(nn.Module):
         self.latentD = cfg.latentD
         self.hc = cfg.pointnet_hc
         self.object_feature = cfg.obj_feature
+        self.device = torch.device("cuda:%d" % cfg.cuda_id if torch.cuda.is_available() else "cpu")
 
         self.num_parts = 16
         self.embed_class = nn.Embedding(self.num_parts, self.hc)
@@ -59,6 +60,10 @@ class ContactGenModel(nn.Module):
         self.contact_decoder = Pointnet(in_dim=encode_dim + self.latentD, hidden_dim=self.hc, out_dim=1)
         self.part_decoder = Pointnet(in_dim=encode_dim + self.latentD + self.latentD, hidden_dim=self.hc, out_dim=self.num_parts)
         self.uv_decoder = Pointnet(in_dim=self.hc + encode_dim + self.latentD, hidden_dim=self.hc, out_dim=3)
+
+        self.contact_ddpm = None
+        self.part_ddpm = None
+        self.uv_ddpm = None
 
     def encode(self, obj_cond, contacts_object, partition_object, uv_object):
         _, contact_latent = self.contact_encoder(torch.cat([obj_cond, contacts_object], -1))
@@ -96,6 +101,11 @@ class ContactGenModel(nn.Module):
         uv_object, _ = self.uv_decoder(torch.cat([z_uv, obj_cond, partition_feat], -1))
         uv_object = normalize_vector(uv_object)
         return contacts_object, partition_object, uv_object
+        
+    def insert_ddpms(self, contact_ddpm, part_ddpm, uv_ddpm):
+        self.contact_ddpm = contact_ddpm
+        self.part_ddpm = part_ddpm
+        self.uv_ddpm = uv_ddpm
     
     def forward(self, verts_object, feat_object, contacts_object, partition_object, uv_object, **kwargs):
         obj_cond = self.obj_pointnet(torch.cat([verts_object, feat_object], -1))
@@ -103,6 +113,12 @@ class ContactGenModel(nn.Module):
         results = {'mean_contact': z_contact.mean, 'std_contact': z_contact.scale,
                    'mean_part': z_part.mean, 'std_part': z_part.scale,
                    'mean_uv': z_uv.mean, 'std_uv': z_uv.scale}
+        if self.contact_ddpm:
+            z_s_contact = self.contact_ddpm.sample(1, z_s_contact.shape, self.device)
+        if self.part_ddpm:
+            z_s_part = self.part_ddpm.sample(1, z_s_part.shape, self.device)
+        if self.uv_ddpm:
+            z_s_uv = self.uv_ddpm.sample(1, z_s_uv.shape, self.device)    
         contacts_pred, partition_pred, uv_pred = self.decode(z_s_contact, z_s_part, z_s_uv, obj_cond, partition_object)
 
         results.update({'contacts_object': contacts_pred,
