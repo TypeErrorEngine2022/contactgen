@@ -10,6 +10,7 @@ reg_coef: 0.0005
 log_every_epoch: 100
 snapshot_every_epoch: 1000
 n_epochs: 3000
+ddpm_n_epochs: 200
 robustkl: True
 # network
 latentD: 16
