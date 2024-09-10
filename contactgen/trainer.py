@@ -161,6 +161,10 @@ class Trainer:
 
     def evaluate(self):
         self.model.eval()
+        self.contact_ddpm.eval()
+        self.part_ddpm.eval()
+        self.uv_ddpm.eval()
+        
         eval_loss_dict_net = {}
         
         with torch.no_grad():
@@ -179,7 +183,7 @@ class Trainer:
         return eval_loss_dict_net
     
     def train_ddpm(self):
-        n_epochs = self.cfg.n_epochs
+        n_epochs = self.cfg.ddpm_n_epochs
         z_contact = torch.distributions.normal.Normal(self.latentSpace['mean_contact'], torch.exp(self.latentSpace['std_contact']))
         z_part = torch.distributions.normal.Normal(self.latentSpace['mean_part'], torch.exp(self.latentSpace['std_part']))
         z_uv = torch.distributions.normal.Normal(self.latentSpace['mean_uv'], torch.exp(self.latentSpace['std_uv']))
